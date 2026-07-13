@@ -8,7 +8,9 @@ L = 10.0      # Domain length (mm)
 N = 100       # Grid points
 
 dt = 0.05     # Time step (s)
-threshold = 0.1  # Concentration threshold for penetration depth
+threshold = 0.01  # Concentration threshold for penetration depth and coverage
+
+target_penetration = 1.0  # Target penetration depth in mm for delivery time
 
 # Physical constants
 kB = 1.380649e-23  # Boltzmann constant (J/K)

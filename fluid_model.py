@@ -15,8 +15,10 @@ def solve_pressure(N, iterations=4000):
         )
     return P
 
-def compute_velocity(P, dx):
+def compute_velocity(P, dx, K_val=None):
     dPy, dPx = np.gradient(P, dx)
-    vx = -(K/mu)*dPx
-    vy = -(K/mu)*dPy
+    if K_val is None:
+        K_val = K
+    vx = -(K_val/mu)*dPx
+    vy = -(K_val/mu)*dPy
     return vx, vy
