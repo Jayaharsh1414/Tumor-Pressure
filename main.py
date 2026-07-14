@@ -49,7 +49,10 @@ plt.figure()
 
 for size in sizes:
 
-    D = kB*T/(3*np.pi*mu*(size*1e-9))
+    # Converted from m^2/s to mm^2/s to match the domain (mm, see parameters.py) -
+    # without this D is 9-10 orders of magnitude too small to have any visible
+    # effect on the simulated transport (see TASKS.md Task 2).
+    D = (kB*T/(3*np.pi*mu*(size*1e-9))) * 1e6
 
     C = np.zeros((N,N))
     C[:,0] = 1.0
@@ -57,7 +60,9 @@ for size in sizes:
     depths = []
     times = []
 
-    for step in range(1200):
+    for step in range(600):  # 120s at dt=0.2 - matches the validated Phase 2 calibration;
+                              # 1200 steps (240s) saturates the domain for every size,
+                              # flattening the size-dependence this result is meant to show
 
         C = transport_step(C,vx,vy,D,ku,dx,dt)
 

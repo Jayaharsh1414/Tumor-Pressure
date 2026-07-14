@@ -47,11 +47,14 @@ UPTAKE_RATES = np.linspace(0.02, 0.10, 7)  # 7 values: [0.02, 0.0367, 0.0533, 0.
 def compute_diffusion_coefficient(particle_size_nm, T=310, mu=1e-3, kB=1.380649e-23):
     """
     Stokes-Einstein equation for diffusion coefficient
-    D = kB*T / (3*pi*mu*r)
+    D = kB*T / (3*pi*mu*r), converted from m^2/s to mm^2/s to match the
+    domain (defined in mm in parameters.py) - without this conversion D is
+    9-10 orders of magnitude too small to have any visible effect on the
+    simulated transport (see TASKS.md Task 2).
     """
     r = particle_size_nm * 1e-9  # Convert nm to m
-    D = kB * T / (3 * np.pi * mu * r)
-    return D
+    D_si = kB * T / (3 * np.pi * mu * r)  # m^2/s
+    return D_si * 1e6  # mm^2/s
 
 def compute_drug_coverage(C, threshold):
     """
@@ -69,25 +72,25 @@ def compute_delivery_time(C, threshold, dt, target_penetration=3.0):
     # This is computed during simulation
     return None  # Will be updated during simulation
 
-def run_simulation(particle_size, pressure_factor, K_value, uptake_rate, N=100, dt=0.05):
+def run_simulation(particle_size, pressure_factor, K_value, uptake_rate, N=100, dt=dt):
     """
     Run a single simulation and return output metrics
     """
     dx = L / (N - 1)
-    
+
     # Use precomputed pressure field, scaled by pressure_factor
     P = BASE_PRESSURE * pressure_factor
     vx, vy = compute_velocity(P, dx, K_value)
     D = compute_diffusion_coefficient(particle_size)
-    
+
     # Initialize concentration
     C = np.zeros((N, N))
     C[:, 0] = 1.0
-    
+
     delivery_time = None
-    
-    # Simulation loop - Run longer to get better statistics
-    max_steps = 2400  # 120 seconds at dt=0.05
+
+    # Simulation loop
+    max_steps = 600  # 120 seconds at dt=0.2 (calibrated, see TASKS.md Task 2)
     for step in range(max_steps):
         C = transport_step(C, vx, vy, D, uptake_rate, dx, dt)
         

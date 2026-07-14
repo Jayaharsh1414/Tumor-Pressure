@@ -49,12 +49,15 @@ while True:
         hydraulic_cond = float(input("  Hydraulic Conductivity (e-6) [0.8-1.2]: ")) * 1e-6
         uptake_rate = float(input("  Cellular Uptake Rate [0.02-0.10]: "))
         
-        # Compute diffusion coefficient using Stokes-Einstein equation
+        # Compute diffusion coefficient using Stokes-Einstein equation,
+        # converted from m^2/s to mm^2/s to match training units
+        # (generate_dataset.py) - without this the model sees D 1e6x
+        # outside its training distribution.
         kB = 1.380649e-23
         T = 310
         mu = 1e-3
         r = particle_size * 1e-9
-        D = kB * T / (3 * np.pi * mu * r)
+        D = (kB * T / (3 * np.pi * mu * r)) * 1e6
         
         # Create input dataframe
         sample = pd.DataFrame({

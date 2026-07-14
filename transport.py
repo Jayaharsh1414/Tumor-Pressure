@@ -2,13 +2,30 @@
 import numpy as np
 
 def transport_step(C, vx, vy, D, ku, dx, dt):
+    # x-direction (columns) must be non-periodic: np.roll wraps column -1
+    # (far tissue edge) directly onto column 0 (fixed vessel-wall source),
+    # which "leaks" the C=1 boundary across the whole domain in one step
+    # regardless of real transport. Left edge keeps its own value (it's
+    # overwritten to the Dirichlet C=1 below anyway); right edge is
+    # no-flux/Neumann (zero-gradient far-field tissue boundary).
+    C_xm = np.empty_like(C); C_xm[:,1:] = C[:,:-1]; C_xm[:,0] = C[:,0]
+    C_xp = np.empty_like(C); C_xp[:,:-1] = C[:,1:]; C_xp[:,-1] = C[:,-1]
+
     lap = (
         np.roll(C,1,0)+np.roll(C,-1,0)+
-        np.roll(C,1,1)+np.roll(C,-1,1)-4*C
+        C_xm + C_xp - 4*C
     )/dx**2
 
-    dCdx = (np.roll(C,-1,1)-np.roll(C,1,1))/(2*dx)
-    dCdy = (np.roll(C,-1,0)-np.roll(C,1,0))/(2*dx)
+    # Upwind differencing for advection: central differencing oscillates and
+    # overshoots C above 1.0 once the grid Peclet number (v*dx/D) exceeds ~2,
+    # which happens routinely once velocity is non-negligible relative to D.
+    dCdx_fwd = (C_xp-C)/dx
+    dCdx_bwd = (C-C_xm)/dx
+    dCdx = np.where(vx >= 0, dCdx_bwd, dCdx_fwd)
+
+    dCdy_fwd = (np.roll(C,-1,0)-C)/dx
+    dCdy_bwd = (C-np.roll(C,1,0))/dx
+    dCdy = np.where(vy >= 0, dCdy_bwd, dCdy_fwd)
 
     C = C + dt*(D*lap - vx*dCdx - vy*dCdy - ku*C)
     C[:,0] = 1.0

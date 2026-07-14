@@ -7,11 +7,17 @@ Implements:
 - Parameter optimization
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from fluid_model import solve_pressure, compute_velocity
+from transport import transport_step, penetration_depth as sim_penetration_depth
+import parameters as sim_params
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
@@ -173,36 +179,42 @@ print("MODEL EVALUATION - MULTI-OUTPUT METRICS")
 print("=" * 70)
 
 results = []
+per_target_results = []
 
 for model_name, model in trained_models.items():
     print(f"\n{model_name}")
     print("-" * 70)
-    
+
     y_pred = predictions[model_name]['test']
-    
+
     # Calculate metrics for each output
     mae_list = []
     rmse_list = []
     r2_list = []
-    
+
     for i, target in enumerate(target_cols):
         mae = mean_absolute_error(y_test.iloc[:, i], y_pred[:, i])
         rmse = np.sqrt(mean_squared_error(y_test.iloc[:, i], y_pred[:, i]))
         r2 = r2_score(y_test.iloc[:, i], y_pred[:, i])
-        
+
         mae_list.append(mae)
         rmse_list.append(rmse)
         r2_list.append(r2)
-        
+
+        per_target_results.append({
+            'Model': model_name, 'Target': target,
+            'MAE': mae, 'RMSE': rmse, 'R2': r2
+        })
+
         print(f"  {target:20s}: MAE={mae:.5f}, RMSE={rmse:.5f}, R²={r2:.5f}")
-    
+
     # Overall metrics (average across outputs)
     avg_mae = np.mean(mae_list)
     avg_rmse = np.mean(rmse_list)
     avg_r2 = np.mean(r2_list)
-    
+
     print(f"  {'Average':20s}: MAE={avg_mae:.5f}, RMSE={avg_rmse:.5f}, R²={avg_r2:.5f}")
-    
+
     results.append({
         'Model': model_name,
         'MAE': avg_mae,
@@ -221,6 +233,37 @@ print(comparison_df.to_string(index=False))
 
 # Save comparison
 comparison_df.to_csv(FIGURES_DIR / "model_comparison.csv", index=False)
+
+# Save the full per-target metrics table (not just the 4-model average) so a
+# reviewer can see MAE/RMSE/R2 for each individual output, not just an average.
+per_target_df = pd.DataFrame(per_target_results)
+per_target_df.to_csv(FIGURES_DIR / "model_comparison_per_target.csv", index=False)
+print("\n✓ Saved per-target metrics: figures/model_comparison_per_target.csv")
+
+# ============================================
+# Step 6b: 5-Fold Cross-Validation
+# ============================================
+
+print("\n" + "=" * 70)
+print("5-FOLD CROSS-VALIDATION (R², full dataset)")
+print("=" * 70)
+
+from sklearn.model_selection import KFold, cross_validate
+
+cv_results = []
+kfold = KFold(n_splits=5, shuffle=True, random_state=42)
+for model_name, model in models.items():
+    cv_scores = cross_validate(
+        model, X_scaled, y, cv=kfold, scoring='r2', n_jobs=-1
+    )
+    r2_mean = cv_scores['test_score'].mean()
+    r2_std = cv_scores['test_score'].std()
+    print(f"  {model_name:20s}: R² = {r2_mean:.5f} ± {r2_std:.5f}")
+    cv_results.append({'Model': model_name, 'CV_R2_mean': r2_mean, 'CV_R2_std': r2_std})
+
+cv_df = pd.DataFrame(cv_results)
+cv_df.to_csv(FIGURES_DIR / "model_comparison_cv.csv", index=False)
+print("✓ Saved cross-validation results: figures/model_comparison_cv.csv")
 
 # ============================================
 # Step 7: Visualize Predictions
@@ -261,6 +304,34 @@ plt.tight_layout()
 plt.savefig(FIGURES_DIR / "result6_actual_vs_predicted.png", dpi=150, bbox_inches='tight')
 print("✓ Saved: result6_actual_vs_predicted.png")
 
+# ============================================
+# Result 7: Multi-Output Prediction Summary
+# ============================================
+# A single combined view of the model predicting PenetrationDepth,
+# MaxConcentration, and DrugCoverage simultaneously from the same 5 inputs -
+# distinct from Result 6's per-target breakdown (which includes DeliveryTime).
+
+multi_output_targets = ['PenetrationDepth', 'MaxConcentration', 'DrugCoverage']
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+for ax, target in zip(axes, multi_output_targets):
+    i = target_cols.index(target)
+    ax.scatter(y_test.iloc[:, i], y_pred_best[:, i], alpha=0.5, c='teal')
+    min_val = min(y_test.iloc[:, i].min(), y_pred_best[:, i].min())
+    max_val = max(y_test.iloc[:, i].max(), y_pred_best[:, i].max())
+    ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2, label='Perfect Prediction')
+    r2 = r2_score(y_test.iloc[:, i], y_pred_best[:, i])
+    ax.set_xlabel('Actual')
+    ax.set_ylabel('Predicted')
+    ax.set_title(f'{target}\n(R² = {r2:.4f})')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+fig.suptitle(f'Result 7: Multi-Output Prediction ({best_model_name})', y=1.02)
+plt.tight_layout()
+plt.savefig(FIGURES_DIR / "result7_multi_output_prediction.png", dpi=150, bbox_inches='tight')
+print("✓ Saved: result7_multi_output_prediction.png")
+
 # Plot 2: Model Comparison
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
@@ -290,61 +361,65 @@ print("\n" + "=" * 70)
 print("STEP 4: EXPLAINABLE AI (SHAP)")
 print("=" * 70)
 
-if HAS_SHAP and best_model_name == 'Random Forest':
+# Feature importance/SHAP are always computed from the Random Forest model
+# specifically (it's always trained above, regardless of which model wins the
+# comparison) rather than being gated on "Random Forest happens to be best" -
+# that gate meant this figure was silently skipped whenever another model won.
+importance_model = trained_models['Random Forest']
+
+if HAS_SHAP:
     print("\nGenerating SHAP explanations...")
-    
+
     try:
-        # Get the underlying model from MultiOutputRegressor
-        base_model = best_model.estimators_[0]
-        
-        # Create SHAP explainer
-        explainer = shap.TreeExplainer(base_model)
-        shap_values = explainer.shap_values(X_test)
-        
-        # Plot feature importance
+        # One explainer per output: importance_model.estimators_[i] is a
+        # single-output tree for target_cols[i]. The original code only ever
+        # explained estimators_[0] (PenetrationDepth) once and then indexed
+        # into its 2D (samples x features) SHAP matrix as if it held one
+        # matrix per target - that's what crashed ("vector not matrix").
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         axes = axes.ravel()
-        
+
         for i, target in enumerate(target_cols):
+            base_model = importance_model.estimators_[i]
+            explainer = shap.TreeExplainer(base_model)
+            shap_values = explainer.shap_values(X_test)
+
             ax = axes[i]
-            # Summary plot for each target
-            shap.summary_plot(shap_values[i], X_test, feature_names=feature_cols, 
-                            plot_type="bar", show=False)
             plt.sca(ax)
-            plt.title(f'{target} - Feature Importance')
-        
+            shap.summary_plot(shap_values, X_test, feature_names=feature_cols,
+                            plot_type="bar", show=False)
+            ax.set_title(f'{target} - Feature Importance')
+
         plt.tight_layout()
         plt.savefig(FIGURES_DIR / "result8_feature_importance_shap.png", dpi=150, bbox_inches='tight')
         print("✓ Saved: result8_feature_importance_shap.png")
-        
+
     except Exception as e:
         print(f"SHAP visualization error: {e}")
         print("Creating alternative feature importance plot...")
 
-# Alternative: Model-based feature importance
-if best_model_name == 'Random Forest':
-    print("Generating feature importance from Random Forest...")
-    
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    axes = axes.ravel()
-    
-    for i, target in enumerate(target_cols):
-        ax = axes[i]
-        importances = best_model.estimators_[i].feature_importances_
-        
-        # Sort features by importance
-        indices = np.argsort(importances)[::-1]
-        
-        ax.bar(range(len(importances)), importances[indices])
-        ax.set_xticks(range(len(importances)))
-        ax.set_xticklabels([feature_cols[j] for j in indices], rotation=45, ha='right')
-        ax.set_ylabel('Importance')
-        ax.set_title(f'{target} - Feature Importance')
-        ax.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    plt.savefig(FIGURES_DIR / "result8_feature_importance.png", dpi=150, bbox_inches='tight')
-    print("✓ Saved: result8_feature_importance.png")
+print("Generating feature importance from Random Forest...")
+
+fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+axes = axes.ravel()
+
+for i, target in enumerate(target_cols):
+    ax = axes[i]
+    importances = importance_model.estimators_[i].feature_importances_
+
+    # Sort features by importance
+    indices = np.argsort(importances)[::-1]
+
+    ax.bar(range(len(importances)), importances[indices])
+    ax.set_xticks(range(len(importances)))
+    ax.set_xticklabels([feature_cols[j] for j in indices], rotation=45, ha='right')
+    ax.set_ylabel('Importance')
+    ax.set_title(f'{target} - Feature Importance')
+    ax.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig(FIGURES_DIR / "result8_feature_importance.png", dpi=150, bbox_inches='tight')
+print("✓ Saved: result8_feature_importance.png")
 
 # ============================================
 # Step 9: Optimization
@@ -370,13 +445,16 @@ for ps in particle_sizes:
     for p in pressures:
         for ur in uptake_rates:
             for hc in hydraulic_cond:
-                # Compute diffusion using Stokes-Einstein
+                # Compute diffusion using Stokes-Einstein, converted to mm^2/s
+                # to match the units the model was trained on (generate_dataset.py) -
+                # without this conversion D is fed to the model 1e6x out of its
+                # training distribution and the optimizer effectively ignores it.
                 kB = 1.380649e-23
                 T = 310
                 mu = 1e-3
                 r = ps * 1e-9
-                D = kB * T / (3 * np.pi * mu * r)
-                
+                D = (kB * T / (3 * np.pi * mu * r)) * 1e6
+
                 # Create input
                 input_data = np.array([[ps, p, hc, ur, D]])
                 input_scaled = scaler.transform(input_data)
@@ -402,6 +480,37 @@ print(f"  Hydraulic Conductivity: {best_params['HydraulicConductivity']:.2e}")
 print(f"  Uptake Rate: {best_params['UptakeRate']:.3f}")
 print(f"  Expected Penetration Depth: {best_penetration:.4f} mm")
 
+# ============================================
+# Step 5b: Validate the AI-predicted optimum against the real simulator
+# ============================================
+# The AI surrogate is only useful if it agrees with the actual PDE model at
+# the point it claims is optimal - re-run the real simulation there and
+# compare, rather than trusting the surrogate's prediction blindly.
+
+print("\n" + "=" * 70)
+print("VALIDATING AI OPTIMUM AGAINST THE REAL PDE SIMULATION")
+print("=" * 70)
+
+dx_sim = sim_params.L / (sim_params.N - 1)
+base_pressure_sim = solve_pressure(sim_params.N)
+pressure_factor_sim = best_params['Pressure'] / 20.0
+P_sim = base_pressure_sim * pressure_factor_sim
+vx_sim, vy_sim = compute_velocity(P_sim, dx_sim, best_params['HydraulicConductivity'])
+
+C_sim = np.zeros((sim_params.N, sim_params.N))
+C_sim[:, 0] = 1.0
+max_steps_sim = 600
+for step in range(max_steps_sim):
+    C_sim = transport_step(
+        C_sim, vx_sim, vy_sim, best_params['Diffusion'],
+        best_params['UptakeRate'], dx_sim, sim_params.dt
+    )
+real_depth = sim_penetration_depth(C_sim, sim_params.threshold, dx_sim)
+
+print(f"  AI-predicted PenetrationDepth:   {best_penetration:.4f} mm")
+print(f"  Real simulation PenetrationDepth: {real_depth:.4f} mm")
+print(f"  Absolute difference:             {abs(best_penetration - real_depth):.4f} mm")
+
 # Create optimization result table
 opt_results = []
 for ps in [20, 50, 100, 150, 200]:
@@ -410,8 +519,8 @@ for ps in [20, 50, 100, 150, 200]:
         T = 310
         mu = 1e-3
         r = ps * 1e-9
-        D = kB * T / (3 * np.pi * mu * r)
-        
+        D = (kB * T / (3 * np.pi * mu * r)) * 1e6  # mm^2/s, matches training units
+
         input_data = np.array([[ps, p, 1.0e-6, 0.05, D]])
         input_scaled = scaler.transform(input_data)
         pred = best_model.predict(input_scaled)[0]

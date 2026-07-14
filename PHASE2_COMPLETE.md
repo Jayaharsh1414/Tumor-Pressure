@@ -1,111 +1,171 @@
-# Phase 2: AI-Based Prediction and Optimization - COMPLETE ✓
+# Phase 2: AI-Based Prediction and Optimization - COMPLETE
 
 ## Summary
 
-Phase 2 has been successfully completed! Your tumor nanoparticle drug delivery project now includes a comprehensive AI-based prediction and optimization system.
+Phase 2 implements an AI-based prediction and optimization system for the tumor
+nanoparticle drug delivery model. This document was rewritten after the professor's
+review identified real bugs in the underlying physics model (see `TASKS.md` for the
+full diagnosis and fix log) — the numbers below are from the regenerated dataset and
+retrained models, not the original (broken) 225-sample run.
 
 ---
 
-## What Was Accomplished
+## Why the numbers changed from the first submission
 
-### Step 1: Dataset Generation ✓
-- **Generated**: 225 simulations with varying parameters
-- **Features**: 5 input parameters
-  - Particle Size (20, 50, 100, 150, 200 nm)
-  - Vessel Pressure (15, 20, 25 mmHg)
-  - Hydraulic Conductivity (Low, Medium, High)
-  - Uptake Rate (0.02 - 0.10)
-  - Diffusion Coefficient (computed via Stokes-Einstein)
+The original dataset was generated on a 10mm domain over a 120-second simulated
+window. At that scale, both diffusion (Stokes-Einstein, computed in raw SI units of
+m²/s) and pressure-driven advection were 9-10 orders of magnitude too small to move
+the drug concentration front more than one 0.101mm grid cell, for every particle size,
+pressure, and hydraulic conductivity combination. Two further numerical bugs (a
+periodic-boundary artifact in the transport solver, and an unset boundary condition in
+the pressure solver) compounded this. The practical effect: `PenetrationDepth` and
+`DeliveryTime` were constant or near-constant, `MaxConcentration` was a very narrow
+range, and the AI model was trained mostly on noise-free deterministic outputs that
+don't reflect real particle-size/diffusion/hydraulic-conductivity sensitivity.
 
-- **Outputs**: 4 multi-output targets
-  - Penetration Depth (mm)
-  - Maximum Concentration
-  - Drug Coverage (%)
-  - Delivery Time (seconds)
+The fix: the domain was rescaled to `L=0.5mm` (500μm — the physically relevant
+interstitial region around a single tumor microvessel, consistent with published
+intercapillary-distance values, rather than a full 10mm tumor slab), the diffusion
+coefficient was correctly converted from m²/s to mm²/s to match the grid units, and
+two solver bugs were fixed. This was validated with a calibration sweep (see
+`TASKS.md` Task 2) before regenerating the full dataset, confirming all four outputs
+now vary meaningfully and monotonically with all five inputs.
 
-**File**: `results/AI_dataset_comprehensive.csv`
+---
 
-### Step 2: Machine Learning Model Training ✓
-Trained and compared 4 different models:
+## Parameter ranges used for dataset generation
 
-| Model | MAE | RMSE | R² Score | Status |
-|-------|-----|------|----------|--------|
-| Decision Tree | 2.1e-17 | 3.4e-17 | **1.0000** | ✓ BEST |
-| Random Forest | 2.4e-13 | 6.6e-13 | 1.0000 | ✓ EXCELLENT |
-| XGBoost | 8.1e-05 | 1.5e-04 | 0.999988 | ✓ EXCELLENT |
-| Neural Network | 36.0 | 106.5 | 0.331 | ⚠ Fair |
+| Parameter | Values used | Count |
+|---|---|---|
+| Particle Size (nm) | 20, 40, 60, 80, 100, 120, 140, 160, 180, 200 | 10 |
+| Vessel Pressure (mmHg) | 15, 17.5, 20, 22.5, 25 | 5 |
+| Hydraulic Conductivity (m²/(Pa·s)) | 0.8e-6 (Low), 1.0e-6 (Medium), 1.2e-6 (High) | 3 |
+| Cellular Uptake Rate (1/s) | linspace(0.02, 0.10, 7) | 7 |
+| Diffusion Coefficient | Computed via Stokes-Einstein from Particle Size, converted to mm²/s | — |
 
-**Best Model**: Decision Tree (R² = 1.0000)
-**Files**: `models/best_model.pkl`, `models/decision_tree.pkl`, `models/random_forest.pkl`, `models/xgboost.pkl`
+Full factorial grid: 10 × 5 × 3 × 7 = **1050 simulations**.
 
-### Step 3: Multi-Output Prediction ✓
-All models predict simultaneously:
-- **Penetration Depth** (primary output for drug delivery effectiveness)
-- **Maximum Concentration** (drug accumulation intensity)
-- **Drug Coverage** (percentage of tissue area reached)
-- **Delivery Time** (time to reach therapeutic levels)
+Domain/timestep: `L=0.5mm`, `N=100` grid points (`dx≈5.05μm`), `dt=0.2s`,
+`max_steps=600` (120s simulated time per run), `threshold=0.01`,
+`target_penetration=0.15mm`.
 
-### Step 4: Explainable AI (Feature Importance) ✓
-Generated feature importance analysis from Random Forest:
-- **Particle Size**: Most influential parameter (directly affects diffusion)
-- **Pressure**: Second most important (controls fluid dynamics)
-- **Diffusion Coefficient**: Third factor (Stokes-Einstein dependent)
-- **Uptake Rate**: Moderate influence (cellular absorption)
-- **Hydraulic Conductivity**: Lower impact on outputs
+---
 
-**File**: `figures/result8_feature_importance.png`
+## Step 1: Dataset Generation
 
-### Step 5: Parameter Optimization ✓
-Performed grid search to find optimal nanoparticle design:
+**File**: `results/AI_dataset_comprehensive.csv` — 1050 simulations, 9 columns.
+
+Target variable ranges after the fix (previously frozen/near-constant):
+
+| Target | Distinct values | Range |
+|---|---|---|
+| PenetrationDepth | 65 | 0.106 – 0.444 mm |
+| MaxConcentration | 971 | 0.813 – 0.982 |
+| DrugCoverage | 65 | 22 – 89 % |
+| DeliveryTime | 31 | 16 – 120 s |
+
+---
+
+## Step 2: Machine Learning Model Training and Evaluation
+
+Trained and compared 4 multi-output regression models, using an explicit **80/20
+train-test split** (840 train / 210 test, `random_state=42`), evaluated only on the
+held-out test set, plus **5-fold cross-validation** on the full dataset to confirm the
+result isn't a fluke of one split.
+
+| Model | Test-split MAE | Test-split RMSE | Test-split R² | 5-fold CV R² (mean ± std) |
+|-------|-----|------|----------|----------|
+| **Random Forest** | 0.5689 | 1.6332 | **0.9852** | 0.9817 ± 0.0045 |
+| XGBoost | 0.6360 | 1.9726 | 0.9784 | 0.9778 ± 0.0046 |
+| Decision Tree | 0.6213 | 2.0412 | 0.9773 | 0.9723 ± 0.0117 |
+| Neural Network | 0.5771 | 1.0912 | 0.8387 | 0.8254 ± 0.0250 |
+
+**Best Model**: Random Forest (R² = 0.9852, test split; 0.9817 ± 0.0045, 5-fold CV)
+
+Per-target breakdown (Random Forest), full table in
+`figures/model_comparison_per_target.csv`:
+
+| Target | MAE | RMSE | R² |
+|---|---|---|---|
+| PenetrationDepth | 0.0031 | 0.0053 | 0.9948 |
+| MaxConcentration | 0.0008 | 0.0020 | 0.9972 |
+| DrugCoverage | 0.5962 | 1.0356 | 0.9950 |
+| DeliveryTime | 1.6753 | 5.4901 | 0.9539 |
+
+R² is no longer a flat 1.0000 across every model and every target: Neural Network
+genuinely underperforms (R²≈0.84, and R²=0.44 specifically on MaxConcentration),
+showing real model differentiation rather than every model memorizing a
+noise-free deterministic surface.
+
+**Files**: `models/best_model.pkl`, `models/{decision_tree,random_forest,xgboost,neural_network}.pkl`
+
+---
+
+## Step 3: Multi-Output Prediction
+
+All models predict 4 outputs simultaneously from the same 5 inputs:
+`PenetrationDepth`, `MaxConcentration`, `DrugCoverage`, `DeliveryTime`.
+
+**Files**:
+- `figures/result6_actual_vs_predicted.png` — all 4 outputs, per-target R²
+- `figures/result7_multi_output_prediction.png` — combined view of PenetrationDepth,
+  MaxConcentration, DrugCoverage predicted simultaneously
+
+---
+
+## Step 4: Explainable AI (Feature Importance)
+
+Feature importance is computed from a Random Forest model regardless of which model
+wins the overall comparison (previously this was silently skipped whenever a
+different model won). Verified non-zero for all 5 features on all 4 targets:
+
+| Target | Top feature | 2nd | 3rd | 4th | 5th |
+|---|---|---|---|---|---|
+| PenetrationDepth | UptakeRate (0.746) | Pressure (0.134) | HydraulicConductivity (0.109) | Diffusion (0.005) | ParticleSize (0.005) |
+| MaxConcentration | UptakeRate (0.767) | Pressure (0.124) | HydraulicConductivity (0.103) | Diffusion (0.003) | ParticleSize (0.003) |
+| DrugCoverage | UptakeRate (0.746) | Pressure (0.134) | HydraulicConductivity (0.109) | Diffusion (0.005) | ParticleSize (0.005) |
+| DeliveryTime | UptakeRate (0.333) | Pressure (0.321) | HydraulicConductivity (0.258) | ParticleSize (0.045) | Diffusion (0.043) |
+
+UptakeRate and Pressure genuinely dominate (cellular absorption and pressure-driven
+convection are the strongest transport mechanisms at this microvessel scale) but
+ParticleSize/Diffusion/HydraulicConductivity are now real, non-zero contributors —
+not the exact-zero artifact reported previously.
+
+**Files**: `figures/result8_feature_importance.png` (Random-Forest-based),
+`figures/result8_feature_importance_shap.png` (SHAP summary plots, one per target -
+the original code only ever explained a single output's tree and mis-indexed the
+result, which is what crashed; fixed by building one explainer per target).
+
+---
+
+## Step 5: Parameter Optimization
+
+Grid search over the AI surrogate to maximize predicted `PenetrationDepth`:
 
 **Optimal Parameters Found**:
-- **Particle Size**: 20 nm
-- **Vessel Pressure**: 15 mmHg
-- **Uptake Rate**: 0.02
-- **Expected Penetration**: 0.101 mm
+- Particle Size: 20 nm
+- Vessel Pressure: 25 mmHg
+- Hydraulic Conductivity: 1.20e-06
+- Uptake Rate: 0.020
+- AI-predicted Penetration Depth: 0.4357 mm
 
-**File**: `figures/result9_optimization_landscape.png`
+**Validated against the real PDE simulation** (not just trusted blindly): re-running
+the actual mathematical model at this exact parameter combination gives a real
+penetration depth of **0.4444 mm** — a 0.0087mm (≈2%) difference from the AI
+prediction, confirming the surrogate model is trustworthy at its claimed optimum.
 
-### Step 6: Model Comparison ✓
-Generated comprehensive performance comparison:
-- Bar charts for MAE, RMSE, and R² metrics
-- Visual ranking of all 4 models
-- Model selection criteria and explanations
+The optimization landscape (Figure 9) now shows real variation across the grid
+(DrugCoverage 46-65%, DeliveryTime 20-44s across particle size × pressure), not the
+flat/constant surface from the original run.
 
-**File**: `figures/result10_model_comparison.png`
+**Files**: `figures/result9_optimization_landscape.png`, `figures/result9_optimization.csv`
 
 ---
 
-## Generated Outputs
+## Step 6: Model Comparison
 
-### Phase 1 Results (Previous Work)
-- `results/result1_pressure.png` - Pressure contour plot
-- `results/result2_velocity.png` - Velocity field visualization
-- `results/result3_t20.png`, `result3_t40.png`, `result3_t60.png` - Concentration evolution
-- `results/result4_depth_time_all_sizes.png` - Penetration depth over time
-- `results/result5_size_vs_depth.png` - Particle size vs penetration
-
-### Phase 2 Results (NEW)
-| Result # | Output | File |
-|----------|--------|------|
-| Result 6 | AI Prediction Accuracy (Actual vs Predicted) | `figures/result6_actual_vs_predicted.png` |
-| Result 8 | Feature Importance (SHAP-style analysis) | `figures/result8_feature_importance.png` |
-| Result 9 | Optimization Landscape (Heatmaps) | `figures/result9_optimization_landscape.png` |
-| Result 10 | Model Comparison Charts | `figures/result10_model_comparison.png` |
-
-### Data Files
-- `results/AI_dataset_comprehensive.csv` - Complete training dataset (225 simulations)
-- `results/dataset_visualization.png` - Parameter correlation plots
-- `figures/model_comparison.csv` - Model metrics table
-- `figures/result9_optimization.csv` - Optimization results grid
-
-### Trained Models
-- `models/best_model.pkl` - Best performing model (Decision Tree)
-- `models/decision_tree.pkl` - Decision Tree regressor
-- `models/random_forest.pkl` - Random Forest regressor
-- `models/xgboost.pkl` - XGBoost regressor
-- `models/neural_network.pkl` - Neural Network regressor
-- `models/scaler.pkl` - Feature scaling transformer
+**Files**: `figures/result10_model_comparison.png`, `figures/model_comparison.csv`,
+`figures/model_comparison_per_target.csv`, `figures/model_comparison_cv.csv`
 
 ---
 
@@ -116,18 +176,6 @@ Generated comprehensive performance comparison:
 python src/predict.py
 ```
 
-This will prompt you to enter:
-1. Particle Size (nm): 20-200
-2. Vessel Pressure (mmHg): 15-25
-3. Hydraulic Conductivity (e-6): 0.8-1.2
-4. Cellular Uptake Rate: 0.02-0.10
-
-The system will output all 4 predicted metrics:
-- Penetration Depth (mm)
-- Maximum Concentration
-- Drug Coverage (%)
-- Delivery Time (seconds)
-
 ### Train New Models
 ```bash
 python src/train_ai.py
@@ -137,16 +185,6 @@ python src/train_ai.py
 ```bash
 python generate_dataset.py
 ```
-
----
-
-## Key Findings
-
-1. **Decision Tree Model**: Achieved perfect R² = 1.0, indicating excellent predictive capability
-2. **Particle Size**: Most critical parameter affecting drug delivery outcomes
-3. **Pressure Optimization**: 15 mmHg vessel pressure with 20 nm particles provides optimal penetration
-4. **Fast Prediction**: Models run in milliseconds (vs. minutes for full PDE simulation)
-5. **Multi-Output Capability**: Simultaneously predicts 4 complementary outcomes for comprehensive analysis
 
 ---
 
@@ -165,64 +203,6 @@ tumor_pressure_final/
 ├── results/                         # All simulation outputs
 ├── figures/                         # All generated plots
 ├── models/                          # Trained ML models
+├── TASKS.md                         # Full bug diagnosis + fix log
 └── README.txt
 ```
-
----
-
-## Next Steps (Optional Enhancements)
-
-1. **Bayesian Optimization**: Use `scipy.optimize` for continuous optimization
-2. **Genetic Algorithm**: Implement GA for multi-objective optimization
-3. **Sensitivity Analysis**: Perform Sobol indices for parameter sensitivity
-4. **Uncertainty Quantification**: Add confidence intervals to predictions
-5. **Real-time Dashboard**: Create an interactive web interface
-6. **Deployment**: Package models as REST API with Flask/FastAPI
-
----
-
-## Performance Metrics Summary
-
-| Metric | Value | Interpretation |
-|--------|-------|-----------------|
-| Best Model R² | 1.0000 | Perfect prediction accuracy |
-| Average RMSE | 2.4e-14 | Virtually zero prediction error |
-| Dataset Size | 225 samples | Sufficient for training |
-| Training Time | ~2 minutes | Fast model training |
-| Prediction Time | <1 ms | Real-time predictions |
-| Feature Count | 5 inputs | Manageable complexity |
-| Output Count | 4 targets | Comprehensive analysis |
-
----
-
-## Publication-Ready Results
-
-Your project now contains publication-quality deliverables:
-✓ Comprehensive dataset (225+ simulations)
-✓ Multiple trained ML models with validation
-✓ Feature importance analysis (explainable AI)
-✓ Parameter optimization results
-✓ Model comparison study
-✓ Visualization suite (10+ publication-ready figures)
-
-Suitable for submission to:
-- *Computational Drug Delivery* journals
-- *Healthcare AI* conferences
-- *Nanoparticle Science* symposiums
-- *Bioengineering* research venues
-
----
-
-## Support
-
-For issues or questions:
-1. Check `figures/model_comparison.csv` for model details
-2. Examine `results/AI_dataset_comprehensive.csv` for data distribution
-3. Review generated plots for visualization insights
-4. Test with `src/predict.py` for real-time verification
-
----
-
-**Phase 2 Status**: ✓✓✓ COMPLETE ✓✓✓
-
-All steps from the Phase 2 workflow have been successfully implemented and executed!
