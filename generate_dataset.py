@@ -1,18 +1,24 @@
 """
 Phase 2: Generate Comprehensive AI Dataset
-Generates 500-1000 simulations by varying:
-- Particle size (20, 50, 100, 150, 200 nm)
-- Vessel pressure (15, 20, 25 mmHg)
-- Hydraulic conductivity (Low, Medium, High)
+Generates ~1050 simulations using Latin Hypercube Sampling over 5 independent
+parameters (Review 2 comment: "use random or Latin Hypercube sampling instead
+of testing only a few fixed parameter values"):
+- Particle size (20-200 nm)
+- Vessel pressure (15-25 mmHg)
+- Hydraulic conductivity (0.8e-6 - 1.2e-6)
 - Cellular uptake rate (0.02-0.10)
+- Drug release rate (0.005-0.10 /s) - first-order release kinetics, new in
+  Review 2: the vessel-wall boundary concentration ramps up over time as
+  C(0,t) = 1 - exp(-k_release*t) instead of being instantly fixed at 1,
+  modeling a nanoparticle carrier releasing its payload over time.
 """
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from itertools import product
 from joblib import Parallel, delayed
+from scipy.stats import qmc
 
 from parameters import *
 from fluid_model import solve_pressure, compute_velocity
@@ -27,18 +33,27 @@ print("Precomputing baseline pressure field...")
 BASE_PRESSURE = solve_pressure(100)
 
 # ============================================
-# Parameter Ranges for Dataset Generation
+# Parameter Ranges (Latin Hypercube Sampling)
 # ============================================
 
-# Expanded parameter ranges for 500-1000 simulations
-PARTICLE_SIZES = [20, 40, 60, 80, 100, 120, 140, 160, 180, 200]  # nm (10 values)
-VESSEL_PRESSURES = [15, 17.5, 20, 22.5, 25]  # mmHg (5 values)
-HYDRAULIC_CONDUCTIVITY = {
-    'Low': 0.8e-6,
-    'Medium': 1.0e-6,
-    'High': 1.2e-6
+N_SAMPLES = 1050  # matches the previous full-factorial dataset size
+
+PARAM_RANGES = {
+    'ParticleSize': (20.0, 200.0),          # nm
+    'Pressure': (15.0, 25.0),               # mmHg
+    'HydraulicConductivity': (0.8e-6, 1.2e-6),
+    'UptakeRate': (0.02, 0.10),             # 1/s
+    'DrugReleaseRate': (0.005, 0.10),       # 1/s (first-order release kinetics)
 }
-UPTAKE_RATES = np.linspace(0.02, 0.10, 7)  # 7 values: [0.02, 0.0367, 0.0533, 0.07, 0.0867, 0.1033, 0.12]
+PARAM_NAMES = list(PARAM_RANGES.keys())
+
+sampler = qmc.LatinHypercube(d=len(PARAM_NAMES), seed=42)
+unit_samples = sampler.random(n=N_SAMPLES)
+lower_bounds = [PARAM_RANGES[p][0] for p in PARAM_NAMES]
+upper_bounds = [PARAM_RANGES[p][1] for p in PARAM_NAMES]
+scaled_samples = qmc.scale(unit_samples, lower_bounds, upper_bounds)
+
+param_df = pd.DataFrame(scaled_samples, columns=PARAM_NAMES)
 
 # ============================================
 # Helper Functions
@@ -65,18 +80,15 @@ def compute_drug_coverage(C, threshold):
     coverage = (covered_cells / total_cells) * 100
     return coverage
 
-def compute_delivery_time(C, threshold, dt, target_penetration=3.0):
+def run_simulation(particle_size, pressure_mmhg, K_value, uptake_rate, release_rate, N=100, dt=dt):
     """
-    Estimate time to reach target penetration depth
-    """
-    # This is computed during simulation
-    return None  # Will be updated during simulation
-
-def run_simulation(particle_size, pressure_factor, K_value, uptake_rate, N=100, dt=dt):
-    """
-    Run a single simulation and return output metrics
+    Run a single simulation and return output metrics. The vessel-wall
+    boundary concentration ramps up over time following first-order release
+    kinetics (release_rate = k_release, units 1/s):
+        C(0, t) = 1 - exp(-k_release * t)
     """
     dx = L / (N - 1)
+    pressure_factor = pressure_mmhg / 20.0
 
     # Use precomputed pressure field, scaled by pressure_factor
     P = BASE_PRESSURE * pressure_factor
@@ -85,21 +97,23 @@ def run_simulation(particle_size, pressure_factor, K_value, uptake_rate, N=100, 
 
     # Initialize concentration
     C = np.zeros((N, N))
-    C[:, 0] = 1.0
+    C[:, 0] = 1 - np.exp(-release_rate * 0.0)
 
     delivery_time = None
 
     # Simulation loop
     max_steps = 600  # 120 seconds at dt=0.2 (calibrated, see TASKS.md Task 2)
     for step in range(max_steps):
-        C = transport_step(C, vx, vy, D, uptake_rate, dx, dt)
-        
+        t_next = (step + 1) * dt
+        boundary_value = 1 - np.exp(-release_rate * t_next)
+        C = transport_step(C, vx, vy, D, uptake_rate, dx, dt, boundary_value=boundary_value)
+
         # Check target penetration every 10 steps to find delivery_time
         if step % 10 == 0 and delivery_time is None:
             depth = penetration_depth(C, threshold, dx)
             if depth >= target_penetration:
                 delivery_time = step * dt
-    
+
     # If target not reached, use final time
     if delivery_time is None:
         delivery_time = max_steps * dt
@@ -111,9 +125,10 @@ def run_simulation(particle_size, pressure_factor, K_value, uptake_rate, N=100, 
 
     return {
         'ParticleSize': particle_size,
-        'Pressure': pressure_factor * 20,  # Scale back to mmHg (normalized from 0-1)
+        'Pressure': pressure_mmhg,
         'HydraulicConductivity': K_value,
         'UptakeRate': uptake_rate,
+        'DrugReleaseRate': release_rate,
         'Diffusion': D,
         'PenetrationDepth': final_depth,
         'MaxConcentration': final_max_conc,
@@ -126,22 +141,17 @@ def run_simulation(particle_size, pressure_factor, K_value, uptake_rate, N=100, 
 # ============================================
 
 print("=" * 70)
-print("PHASE 2: GENERATING COMPREHENSIVE AI DATASET")
+print("PHASE 2: GENERATING COMPREHENSIVE AI DATASET (Latin Hypercube Sampling)")
 print("=" * 70)
 
-# Prepare task list for parallel execution
-tasks = []
-for ps, vp, (hc_name, hc_val), ur in product(
-    PARTICLE_SIZES, VESSEL_PRESSURES, HYDRAULIC_CONDUCTIVITY.items(), UPTAKE_RATES
-):
-    pressure_factor = vp / 20.0
-    tasks.append((ps, pressure_factor, hc_val, ur))
+tasks = list(param_df.itertuples(index=False, name=None))
 
-print(f"\nRunning {len(tasks)} simulations in parallel using all available cores...")
+print(f"\nRunning {len(tasks)} LHS-sampled simulations in parallel using all available cores...")
+print(f"Parameter ranges: {PARAM_RANGES}")
 
 try:
     results = Parallel(n_jobs=-1, verbose=5)(
-        delayed(run_simulation)(ps, pf, hc, ur) for ps, pf, hc, ur in tasks
+        delayed(run_simulation)(ps, pf, hc, ur, rr) for ps, pf, hc, ur, rr in tasks
     )
     dataset = [r for r in results if r is not None]
 except Exception as e:
@@ -178,35 +188,43 @@ print(df.head(10))
 
 print("\nGenerating dataset visualization plots...")
 
-fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
-# Plot 1: Penetration Depth vs Particle Size
 axes[0, 0].scatter(df['ParticleSize'], df['PenetrationDepth'], alpha=0.5)
 axes[0, 0].set_xlabel('Particle Size (nm)')
 axes[0, 0].set_ylabel('Penetration Depth (mm)')
 axes[0, 0].set_title('Penetration Depth vs Particle Size')
 axes[0, 0].grid(True, alpha=0.3)
 
-# Plot 2: Max Concentration vs Particle Size
 axes[0, 1].scatter(df['ParticleSize'], df['MaxConcentration'], alpha=0.5, color='orange')
 axes[0, 1].set_xlabel('Particle Size (nm)')
 axes[0, 1].set_ylabel('Max Concentration')
 axes[0, 1].set_title('Max Concentration vs Particle Size')
 axes[0, 1].grid(True, alpha=0.3)
 
-# Plot 3: Delivery Time vs Uptake Rate
+axes[0, 2].scatter(df['DrugReleaseRate'], df['PenetrationDepth'], alpha=0.5, color='purple')
+axes[0, 2].set_xlabel('Drug Release Rate (1/s)')
+axes[0, 2].set_ylabel('Penetration Depth (mm)')
+axes[0, 2].set_title('Penetration Depth vs Drug Release Rate')
+axes[0, 2].grid(True, alpha=0.3)
+
 axes[1, 0].scatter(df['UptakeRate'], df['DeliveryTime'], alpha=0.5, color='green')
 axes[1, 0].set_xlabel('Uptake Rate')
 axes[1, 0].set_ylabel('Delivery Time (s)')
 axes[1, 0].set_title('Delivery Time vs Uptake Rate')
 axes[1, 0].grid(True, alpha=0.3)
 
-# Plot 4: Drug Coverage vs Pressure
 axes[1, 1].scatter(df['Pressure'], df['DrugCoverage'], alpha=0.5, color='red')
 axes[1, 1].set_xlabel('Pressure (mmHg)')
 axes[1, 1].set_ylabel('Drug Coverage (%)')
 axes[1, 1].set_title('Drug Coverage vs Pressure')
 axes[1, 1].grid(True, alpha=0.3)
+
+axes[1, 2].scatter(df['DrugReleaseRate'], df['MaxConcentration'], alpha=0.5, color='brown')
+axes[1, 2].set_xlabel('Drug Release Rate (1/s)')
+axes[1, 2].set_ylabel('Max Concentration')
+axes[1, 2].set_title('Max Concentration vs Drug Release Rate')
+axes[1, 2].grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.savefig(RESULTS_DIR / "dataset_visualization.png", dpi=150, bbox_inches='tight')
@@ -217,3 +235,4 @@ print("DATASET GENERATION COMPLETE")
 print("=" * 70)
 print(f"Total samples: {len(df)}")
 print(f"Features: {df.columns.tolist()}")
+print(f"Sampling method: Latin Hypercube Sampling (5 independent dimensions)")

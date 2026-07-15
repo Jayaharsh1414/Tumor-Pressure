@@ -1,7 +1,7 @@
 
 import numpy as np
 
-def transport_step(C, vx, vy, D, ku, dx, dt):
+def transport_step(C, vx, vy, D, ku, dx, dt, boundary_value=1.0):
     # x-direction (columns) must be non-periodic: np.roll wraps column -1
     # (far tissue edge) directly onto column 0 (fixed vessel-wall source),
     # which "leaks" the C=1 boundary across the whole domain in one step
@@ -28,7 +28,10 @@ def transport_step(C, vx, vy, D, ku, dx, dt):
     dCdy = np.where(vy >= 0, dCdy_bwd, dCdy_fwd)
 
     C = C + dt*(D*lap - vx*dCdx - vy*dCdy - ku*C)
-    C[:,0] = 1.0
+    # boundary_value defaults to 1.0 (instant fixed source, original behavior).
+    # generate_dataset.py passes a time-ramping value here to model first-order
+    # drug release kinetics: C(0,t) = 1 - exp(-k_release*t).
+    C[:,0] = boundary_value
     return C
 
 def penetration_depth(C, threshold, dx):

@@ -26,7 +26,7 @@ if not MODEL_PATH.exists():
 model = joblib.load(MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
 
-feature_names = ['ParticleSize', 'Pressure', 'HydraulicConductivity', 'UptakeRate', 'Diffusion']
+feature_names = ['ParticleSize', 'Pressure', 'HydraulicConductivity', 'UptakeRate', 'DrugReleaseRate', 'Diffusion']
 output_names = ['PenetrationDepth', 'MaxConcentration', 'DrugCoverage', 'DeliveryTime']
 
 print("=" * 70)
@@ -43,12 +43,13 @@ while True:
         print("\n" + "-" * 70)
         print("Enter Nanoparticle Parameters:")
         print("-" * 70)
-        
+
         particle_size = float(input("  Particle Size (nm) [20-200]: "))
         pressure = float(input("  Vessel Pressure (mmHg) [15-25]: "))
         hydraulic_cond = float(input("  Hydraulic Conductivity (e-6) [0.8-1.2]: ")) * 1e-6
         uptake_rate = float(input("  Cellular Uptake Rate [0.02-0.10]: "))
-        
+        release_rate = float(input("  Drug Release Rate (1/s) [0.005-0.10]: "))
+
         # Compute diffusion coefficient using Stokes-Einstein equation,
         # converted from m^2/s to mm^2/s to match training units
         # (generate_dataset.py) - without this the model sees D 1e6x
@@ -58,49 +59,51 @@ while True:
         mu = 1e-3
         r = particle_size * 1e-9
         D = (kB * T / (3 * np.pi * mu * r)) * 1e6
-        
+
         # Create input dataframe
         sample = pd.DataFrame({
             "ParticleSize": [particle_size],
             "Pressure": [pressure],
             "HydraulicConductivity": [hydraulic_cond],
             "UptakeRate": [uptake_rate],
+            "DrugReleaseRate": [release_rate],
             "Diffusion": [D]
         })
-        
+
         # Scale features
         sample_scaled = scaler.transform(sample)
-        
+
         # Make prediction
         predictions = model.predict(sample_scaled)[0]
-        
+
         # Display results
         print("\n" + "=" * 70)
         print("PREDICTION RESULTS")
         print("=" * 70)
-        
+
         print(f"\nInput Parameters:")
         print(f"  Particle Size: {particle_size:.1f} nm")
         print(f"  Vessel Pressure: {pressure:.1f} mmHg")
-        print(f"  Hydraulic Conductivity: {hydraulic_cond:.2e} m²/(Pa·s)")
-        print(f"  Cellular Uptake Rate: {uptake_rate:.3f} s⁻¹")
-        print(f"  Diffusion Coefficient: {D:.2e} m²/s")
-        
+        print(f"  Hydraulic Conductivity: {hydraulic_cond:.2e} m2/(Pa.s)")
+        print(f"  Cellular Uptake Rate: {uptake_rate:.3f} 1/s")
+        print(f"  Drug Release Rate: {release_rate:.4f} 1/s")
+        print(f"  Diffusion Coefficient: {D:.2e} mm2/s")
+
         print(f"\nPredicted Outcomes:")
         print(f"  Penetration Depth: {predictions[0]:.4f} mm")
         print(f"  Maximum Concentration: {predictions[1]:.4f}")
         print(f"  Drug Coverage: {predictions[2]:.2f}%")
         print(f"  Delivery Time: {predictions[3]:.2f} seconds")
-        
+
         print("\n" + "=" * 70)
-        
+
     except ValueError as e:
         print(f"Error: Invalid input. {e}")
         continue
     except Exception as e:
         print(f"Error: {e}")
         continue
-    
+
     choice = input("\nMake another prediction? (y/n): ")
     if choice.lower() != "y":
         break

@@ -198,3 +198,83 @@
     (20nm=0.419mm → 200nm=0.359mm, correct direction), grid-independence max
     velocity scales sensibly with grid resolution (50→0.00207, 100→0.00353,
     200→0.0071).
+
+---
+
+## Review 2 comments (professor PDF, "comments for report.pdf", received 2026-07-16)
+
+Comments span Figures 6-10. Grouped by what they actually require:
+
+- [x] **R2-1 Residual analysis** — add a residual plot (Actual − Predicted) per
+  target (Fig 6 & 7 ask for this), identify the DeliveryTime outliers
+  specifically (largest |residual| rows) and explain them from the physics
+  (rows where the 0.15mm target was never reached within 120s fall back to the
+  max-time value of 120s - these are the outliers, not model failure).
+- [x] **R2-2 Per-target/per-model tables in the report** — already computed in
+  `figures/model_comparison_per_target.csv` and `model_comparison_cv.csv`;
+  format into the actual report tables the professor drew (Fig 6, 7, 10), add
+  **training time** and **prediction time** per model (not currently tracked)
+  and a **Remarks** column for Fig 10's table.
+- [x] **R2-3 EDA / correlation matrix** — add summary stats (min/max/mean/std)
+  and a correlation matrix across inputs+outputs. This directly answers the
+  professor's Fig 8.1 question ("are the three outputs highly correlated,
+  or is UptakeRate just dominating?") with actual numbers instead of speculation.
+- [x] **R2-4 SHAP figure formatting bug** — professor flagged real overlap:
+  the `mean(|SHAP value|)` x-axis label overlaps between subplots. Fix:
+  larger figure, explicit `hspace`/`wspace`, per-subplot label handling,
+  export at 300dpi.
+- [x] **R2-5 Feature importance numerical table** — save the actual importance
+  values (not just bars) per target per feature, verify they sum to 1.
+- [x] **R2-6 Sensitivity analysis cross-check** — professor wants AI feature
+  importance/SHAP compared against a sensitivity analysis run on the actual
+  mathematical model (not just the AI). Implement: perturb one input at a time
+  around a baseline in the real simulator, measure normalized output
+  sensitivity, rank, and compare that ranking to the ML feature importance
+  ranking.
+- [x] **R2-7 Hyperparameters + reproducibility** — document RF/DT/NN/XGBoost
+  hyperparameters explicitly (already set in code, just needs to be surfaced
+  in the report/printed output).
+- [x] **R2-8 Optimization landscape (Fig 9)** — current grid is only 15
+  combinations (5 particle sizes × 3 pressures) with HydraulicConductivity and
+  UptakeRate held fixed. Expand to vary all 4 independent parameters, highlight
+  the optimal point on the heatmap, add a results caption.
+- [x] **R2-9 Parameter range table** — consolidate one definitive table (input
+  ranges + resulting Diffusion range + sample counts) for the report.
+- [x] **R2-10 Written discussions** — multiple short (4-8 line) interpretive
+  discussions requested throughout (why DeliveryTime is harder to predict, why
+  UptakeRate dominates physically/mathematically, why Neural Network has low
+  R² despite low RMSE, strengths/limitations, etc.) — write these into
+  `PHASE2_COMPLETE.md` using the real numbers from the above.
+
+**Update — Drug Release Rate implemented after all (2026-07-16, later same session):**
+Originally descoped (see prior note below, kept for history). User asked to
+implement it after all. Done:
+- **Mechanism**: first-order release kinetics (standard in controlled-release
+  pharmacokinetics) - the vessel-wall boundary now ramps up over time instead
+  of being instantly fixed at 1: `C(0,t) = 1 - exp(-k_release*t)`.
+  `transport.py: transport_step` gained a `boundary_value=1.0` parameter
+  (backward compatible, `main.py`/Phase 1 unaffected).
+- **Calibration first** (same discipline as Task 2): swept k_release 0.005-1.0,
+  found depth varies meaningfully from 0.187mm to 0.237mm between k=0.005 and
+  k=0.1, flat above that. Range used: **[0.005, 0.10] 1/s**.
+- **Dataset regenerated with Latin Hypercube Sampling** (`generate_dataset.py`
+  rewritten to use `scipy.stats.qmc.LatinHypercube`, 5 independent dimensions,
+  1050 samples) - this also satisfies the "use random/LHS sampling instead of
+  fixed values" comment that was originally descoped alongside it.
+- `train_ai.py`/`predict.py`: `DrugReleaseRate` added as a 6th feature
+  throughout (training, optimization grid, sensitivity analysis, prediction CLI).
+- **Result**: DrugReleaseRate importance = 0.92 for MaxConcentration
+  specifically (physically correct - MaxConcentration is measured right at the
+  boundary DrugReleaseRate controls), near-zero for PenetrationDepth/DrugCoverage.
+- **Caveat noted honestly**: the local sensitivity analysis (baseline=0.05,
+  ±20%) shows near-zero DrugReleaseRate sensitivity because 0.05 already sits
+  past the saturation "knee" of the release curve - a known limitation of
+  local point-sensitivity for nonlinear/saturating functions. The ML feature
+  importance (evaluated across the full training range) is the more reliable
+  signal for this parameter; this discrepancy is documented in
+  `PHASE2_COMPLETE.md` rather than hidden.
+
+**Original note (superseded above, kept for history):** Professor's "Comments
+on the Data" section under Fig 9 asked for a much larger optimization dataset
+including a new Drug Release Rate parameter. This was initially descoped as
+too risky to rush, then implemented after explicit user confirmation.
